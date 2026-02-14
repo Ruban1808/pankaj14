@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>For You ❤️</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Segoe UI', sans-serif; }
+        
+        /* Message Styling */
+        .heart-message {
+            color: #fff;
+            font-size: 22px;
+            font-weight: 700;
+            text-shadow: 0 0 10px rgba(255, 192, 203, 1), 0 0 20px rgba(255, 0, 100, 0.8);
+            white-space: nowrap;
+            pointer-events: none;
+            opacity: 1;
+            transition: opacity 1s ease-out;
+            text-align: center;
+        }
+        
+        #instruction {
+            position: absolute;
+            bottom: 30px;
+            width: 100%;
+            text-align: center;
+            color: rgba(255,255,255,0.6);
+            pointer-events: none;
+            font-size: 14px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="instruction">Rotate & Tap a heart </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+        // --- CONFIGURATION ---
+        const HEART_COUNT = 2000;
+        const UNIVERSE_RADIUS = 3000;
+        const MESSAGES = [
+            "I love you more than code",
+            "You are my favorite bug fix",
+            "Forever my player 2",
+            "You light up my world",
+            "My heart beats for you",
+            "Only you",
+            "Stay close to me",
+            "You're my universe",
+            "Everything is better with you",
+            "My happy place",
+            "You + Me = Forever",
+            "Thinking of you",
+            "My dream come true"
+        ];
+        
+        // --- SHADERS (The Magic for resizing individual hearts) ---
+        const vertexShader = `
+            attribute float size;
+            attribute vec3 customColor;
+            varying vec3 vColor;
+            void main() {
+                vColor = customColor;
+                vec4 mvPosition = modelViewMatrix * vec4( position, 1.0 );
+                gl_PointSize = size * ( 300.0 / -mvPosition.z );
+                gl_Position = projectionMatrix * mvPosition;
+            }
+        `;
+
+        const fragmentShader = `
+            uniform vec3 color;
+            uniform sampler2D pointTexture;
+            varying vec3 vColor;
+            void main() {
+                gl_FragColor = vec4( color * vColor, 1.0 );
+                gl_FragColor = gl_FragColor * texture2D( pointTexture, gl_PointCoord );
+                if ( gl_FragColor.a < 0.5 ) discard;
+            }
+        `;
+        // ---------------------
+
+        let scene, camera, renderer, labelRenderer, composer, controls;
+        let heartSystem, raycaster, mouse;
+        let explosions = [];
+        let activeMessages = [];
+
+        init();
+        animate();
+
+        function init() {
+            // 1. Scene
+            scene = new THREE.Scene();
+            scene.fog = new THREE.FogExp2(0x000000, 0.0003);
+
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 6000);
+            camera.position.set(0, 0, 1000);
+
+            // 2. Renderers
+            renderer = new THREE.WebGLRenderer({ antialias: false });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.toneMapping = THREE.ReinhardToneMapping;
+            document.body.appendChild(renderer.domElement);
+
+            labelRenderer = new CSS2DRenderer();
+            labelRenderer.setSize(window.innerWidth, window.innerHeight);
+            labelRenderer.domElement.style.position = 'absolute';
+            labelRenderer.domElement.style.top = '0px';
+            labelRenderer.domElement.style.pointerEvents = 'none'; 
+            document.body.appendChild(labelRenderer.domElement);
+
+            // 3. Bloom (Glow)
+            const renderScene = new RenderPass(scene, camera);
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+            bloomPass.strength = 1.2;
+            bloomPass.radius = 0.5;
+
+            composer = new EffectComposer(renderer);
+            composer.addPass(renderScene);
+            composer.addPass(bloomPass);
+
+            // 4. Controls
+            controls = new OrbitControls(camera, document.body); // Attach to body to capture all clicks
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.autoRotate = true; 
+            controls.autoRotateSpeed = 0.6; // Slow movement
+
+            // 5. Objects
+            createHeartSystem();
+
+            raycaster = new THREE.Raycaster();
+            mouse = new THREE.Vector2();
+            
+            window.addEventListener('pointerdown', onPointerDown);
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function createHeartTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 128; canvas.height = 128;
+            const ctx = canvas.getContext('2d');
+            
+            // --- THE FIX: FLIP THE CANVAS VERTICALLY ---
+            ctx.translate(0, canvas.height);
+            ctx.scale(1, -1);
+            // -------------------------------------------
+
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            const w = 128, h = 128;
+            const topCurveHeight = h * 0.3;
+            
+            // Draw the heart path
+            ctx.moveTo(w / 2, h * 0.2);
+            ctx.bezierCurveTo(w / 2, 0, 0, 0, 0, topCurveHeight);
+            ctx.bezierCurveTo(0, h * 0.6, w / 2, h * 0.9, w / 2, h);
+            ctx.bezierCurveTo(w / 2, h * 0.9, w, h * 0.6, w, topCurveHeight);
+            ctx.bezierCurveTo(w, 0, w / 2, 0, w / 2, h * 0.2);
+            
+            ctx.fill();
+            
+            const texture = new THREE.CanvasTexture(canvas);
+            return texture;
+        }
+
+        function createHeartSystem() {
+            const geometry = new THREE.BufferGeometry();
+            const positions = [];
+            const colors = [];
+            const sizes = [];
+            const colorObj = new THREE.Color();
+
+            for (let i = 0; i < HEART_COUNT; i++) {
+                const r = UNIVERSE_RADIUS * Math.cbrt(Math.random());
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos(2 * Math.random() - 1);
+
+                const x = r * Math.sin(phi) * Math.cos(theta);
+                const y = r * Math.sin(phi) * Math.sin(theta);
+                const z = r * Math.cos(phi);
+
+                positions.push(x, y, z);
+
+                // Rainbow Colors
+                colorObj.setHSL(Math.random(), 0.9, 0.6);
+                colors.push(colorObj.r, colorObj.g, colorObj.b);
+
+                // Random sizes
+                sizes.push(40 + Math.random() * 40); 
+            }
+
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geometry.setAttribute('customColor', new THREE.Float32BufferAttribute(colors, 3));
+            geometry.setAttribute('size', new THREE.Float32BufferAttribute(sizes, 1));
+
+            // SHADER MATERIAL: This allows us to change size of specific particles
+            const material = new THREE.ShaderMaterial({
+                uniforms: {
+                    color: { value: new THREE.Color(0xffffff) },
+                    pointTexture: { value: createHeartTexture() }
+                },
+                vertexShader: vertexShader,
+                fragmentShader: fragmentShader,
+                blending: THREE.AdditiveBlending,
+                depthTest: false,
+                transparent: true
+            });
+
+            heartSystem = new THREE.Points(geometry, material);
+            scene.add(heartSystem);
+        }
+
+        function onPointerDown(event) {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+            raycaster.params.Points.threshold = 15;
+
+            const intersects = raycaster.intersectObject(heartSystem);
+
+            if (intersects.length > 0) {
+                const hit = intersects[0];
+                const index = hit.index;
+                const attributes = heartSystem.geometry.attributes;
+
+                // Check if already popped
+                if (attributes.size.getX(index) === 0) return;
+
+                // 1. DISAPPEAR: Set size to 0
+                attributes.size.setX(index, 0); 
+                attributes.size.needsUpdate = true; // IMPORTANT: Tells GPU to update
+
+                // 2. Get Data for Burst
+                const r = attributes.customColor.getX(index);
+                const g = attributes.customColor.getY(index);
+                const b = attributes.customColor.getZ(index);
+                const color = new THREE.Color(r, g, b);
+                
+                const pos = new THREE.Vector3(
+                    attributes.position.getX(index),
+                    attributes.position.getY(index),
+                    attributes.position.getZ(index)
+                );
+
+                // 3. BURST & MESSAGE
+                createExplosion(pos, color);
+                showFloatingMessage(pos);
+            }
+        }
+
+        function createExplosion(position, color) {
+            const particleCount = 40;
+            const geometry = new THREE.BufferGeometry();
+            const positions = [];
+            const velocities = [];
+
+            for (let i = 0; i < particleCount; i++) {
+                positions.push(position.x, position.y, position.z);
+                const v = new THREE.Vector3(
+                    Math.random() - 0.5, 
+                    Math.random() - 0.5, 
+                    Math.random() - 0.5
+                ).normalize().multiplyScalar(Math.random() * 20 + 5); // Fast explosion
+                velocities.push(v);
+            }
+
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            
+            const material = new THREE.PointsMaterial({
+                size: 15,
+                color: color,
+                transparent: true,
+                opacity: 1,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false,
+                map: heartSystem.material.uniforms.pointTexture.value // Reuse texture
+            });
+
+            const particles = new THREE.Points(geometry, material);
+            scene.add(particles);
+
+            explosions.push({ mesh: particles, velocities: velocities, age: 0 });
+        }
+
+        let msgPool = [...MESSAGES];
+        function showFloatingMessage(position) {
+            if (msgPool.length === 0) msgPool = [...MESSAGES]; 
+            const msgText = msgPool.splice(Math.floor(Math.random() * msgPool.length), 1)[0];
+
+            const div = document.createElement('div');
+            div.className = 'heart-message';
+            div.textContent = msgText;
+            
+            const label = new CSS2DObject(div);
+            label.position.copy(position);
+            scene.add(label);
+
+            activeMessages.push({ label: label, div: div, age: 0 });
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            labelRenderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const dt = 0.016; 
+
+            controls.update(); // Auto-rotate handles here
+
+            // Update Explosions
+            for (let i = explosions.length - 1; i >= 0; i--) {
+                const ex = explosions[i];
+                ex.age += dt;
+                
+                if (ex.age > 1.2) { 
+                    scene.remove(ex.mesh);
+                    ex.mesh.geometry.dispose();
+                    ex.mesh.material.dispose();
+                    explosions.splice(i, 1);
+                    continue;
+                }
+
+                const positions = ex.mesh.geometry.attributes.position.array;
+                for (let j = 0; j < ex.velocities.length; j++) {
+                    const v = ex.velocities[j];
+                    positions[j*3] += v.x;
+                    positions[j*3+1] += v.y;
+                    positions[j*3+2] += v.z;
+                    v.multiplyScalar(0.95); // Drag
+                }
+                ex.mesh.geometry.attributes.position.needsUpdate = true;
+                ex.mesh.material.opacity = 1 - (ex.age / 1.2);
+            }
+
+            // Update Messages
+            for (let i = activeMessages.length - 1; i >= 0; i--) {
+                const m = activeMessages[i];
+                m.age += dt;
+                m.label.position.y += 1.5; // Float up
+
+                if (m.age > 4) { 
+                    m.div.style.opacity = '0';
+                    if (m.age > 5) {
+                        scene.remove(m.label);
+                        activeMessages.splice(i, 1);
+                    }
+                }
+            }
+
+            composer.render();
+            labelRenderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html> 
